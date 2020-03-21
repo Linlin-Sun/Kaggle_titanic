@@ -1,0 +1,487 @@
+---
+title: "Kaggle Titanic Competition"
+author: "Linlin Sun"
+date: "3/19/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Kaggle Titanic Competition Description
+The sinking of the Titanic is one of the most infamous shipwrecks in history.
+
+On April 15, 1912, during her maiden voyage, the widely considered "unsinkable" RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren't enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.
+
+While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.
+
+In this challenge, we ask you to build a predictive model that answers the question: "what sorts of people were more likely to survive?" using passenger data (ie name, age, gender, socio-economic class, etc).
+
+# Purpose of this document
+As a newnie in the data science world, I would like to use this educational competition as one of my learning guides. I will try with different methods to see how good my prediction will get. The methods include what I learned from my current courses or from the notebooks that other more advanced users posted on kaggle. 
+
+## Load libraries
+
+```{r, message = FALSE}
+library(tidyverse)
+library(grid)
+library(gridExtra)
+library(caret)
+```
+
+## Examine the csv file. Notice that the Cabin and Age columns both have some empty fields. When importing data, use na.string to convert empty string to NA. 
+
+## Import data
+
+```{r, message = FALSE}
+path <- getwd()
+train_file <- paste(path, "data/train.csv", sep = "/")
+test_file <- paste(path, "data/test.csv", sep = "/")
+train <- read.csv(train_file, header = TRUE, stringsAsFactors = FALSE, na.strings = c("NA", ""))
+test <- read.csv(test_file, header = TRUE, stringsAsFactors = FALSE, na.strings = c("NA", ""))
+
+test_survived <- test %>% mutate(Survived = NA)
+all <- rbind(train, test_survived)
+```
+## Data wrangling
+
+### Check NA fields. 
+Conclusion: 
+
+It looks like the Cabin column has the most NA values, Age column has some NA values. 
+
+Fare and Embarked column have a few entries with NA. 
+
+```{r, message = FALSE}
+sapply(train, function(x) {sum(is.na(x))})
+sapply(test, function(x) {sum(is.na(x))})
+sapply(all, function(x) {sum(is.na(x))})
+```
+
+### Convert some columns to factor
+
+```{r, message = FALSE}
+train <- train %>% mutate(Sex = as.factor(Sex), Pclass = as.factor(Pclass), 
+                          Survived = as.factor(Survived), Embarked = as.factor(Embarked))
+test <- test %>% mutate(Sex = as.factor(Sex), Pclass = as.factor(Pclass), 
+                          Embarked = as.factor(Embarked))
+
+all <- all %>% mutate(Sex = as.factor(Sex), Pclass = as.factor(Pclass),
+                          Survived = as.factor(Survived), Embarked = as.factor(Embarked))
+```
+
+## Exploratory data analysis
+
+
+### Look at the Sex, Pclass distribution in each of train and test dataset. 
+Conclusion: 
+
+Both features have similar distribution in train and test dataset.  
+
+```{r}
+prop.table(rbind(table(train$Sex), table(test$Sex)), 1)
+prop.table(rbind(table(train$Pclass), table(test$Pclass)), 1)
+p1 <- all %>% mutate(train = ifelse(!is.na(Survived), "Train", "Test")) %>% 
+  ggplot(aes(train, y = ..count../sum(..count..), fill = Sex)) +
+  geom_bar(position = "fill") +
+  labs(y = "Proportion")
+p2 <- all %>% mutate(train = ifelse(!is.na(Survived), "Train", "Test")) %>% 
+  ggplot(aes(train, y = ..count../sum(..count..), fill = Pclass)) +
+  geom_bar(position = "fill") +
+  labs(y = "Proportion")
+grid.arrange(p1, p2, nrow = 1)
+```
+
+### Look at the relationship between Sex and Survived in train dataset. 
+
+Conclusion: Female has much higher survival chance.
+
+```{r}
+table(train$Sex, train$Survived)
+prop.table(table(train$Sex, train$Survived), 1)
+
+p3 <- train %>% ggplot(aes(Sex, fill = Survived)) + 
+  geom_bar(position = "dodge") +
+  geom_label(stat = "count", aes(label = ..count..), show.legend = FALSE) +
+  labs(title = "Sex and Survived",
+       subtitle = "Train data",
+       caption = "datasource: Kaggle Titanic Competition https://www.kaggle.com/c/titanic/data")
+p3
+```
+
+### Look at the relationship between Pclass and Survived in train dataset. 
+
+Conclusion: The higher Pclass, the better survival chance. 
+
+```{r}
+table(train$Pclass, train$Survived)
+prop.table(table(train$Pclass, train$Survived), 1)
+
+p4 <- train %>% ggplot(aes(Pclass, fill = Survived)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Pclass and Survived", 
+       subtitle = "Train data",
+       caption = "datasource: Kaggle Titanic Competition https://www.kaggle.com/c/titanic/data")
+p4
+```
+
+
+### Look at the combined relationship among Sex, Pclass and Survived in train dataset. 
+
+Conclusion:
+1. Sex has more weight while deciding survived or not in Pclass 1 and 2. 
+2. In pclass 3, both female and male have similar surviving rate. 
+3. As a male in Pclass 1 and 2 has slight better surviving chance than a male in Pclass 3. 
+
+```{r}
+p5 <- train %>% ggplot(aes(Pclass, fill = Survived)) + 
+  geom_bar(position = "dodge") +
+  facet_grid(. ~ Sex)
+p6 <- train %>% ggplot(aes(Pclass, fill = Survived)) + 
+  geom_bar(position = "fill") +
+  facet_grid(. ~ Sex) +
+  labs(y = "Proportion")
+grid.arrange(p5, p6, nrow = 2)
+```
+
+
+# Modeling and prediction
+
+## Partition the train data into train_set and eval_set
+
+```{r}
+set.seed(2020, sample.kind = "Rounding")
+eval_index <- createDataPartition(train$Survived, times = 1, p = 0.2, list = FALSE)
+train_set <- train[-eval_index, ]
+eval_set <- train[eval_index, ]
+```
+
+## Model 0: Use gender only
+
+```{r}
+y_hat_0 <- ifelse(test$Sex == "female", "1", "0")
+submit_model_0 <- data.frame(PassengerId = test$PassengerId, Survived = y_hat_0)
+write.csv(submit_model_0, "data/Titanic_model_0.csv", row.names = FALSE)
+# Score: 0.76555
+model_scores <- data.frame(mondel_num = 0, model = "Gender only", features_used = "Sex", score = 0.76555)
+
+```
+
+## Model 1: Trying some popular models without fixing any missing data
+When we looked at the data before, we have NAs in Age and Cabin columns. Also, we miss a few Embarked and Fare values in test set.
+
+In this model, I will not use those four columns. 
+
+```{r}
+train_1 <- train_set %>% select(Survived, Pclass, Sex, SibSp, Parch)
+eval_1 <- eval_set %>% select(Survived, Pclass, Sex, SibSp, Parch)
+test_1 <- test %>% select(PassengerId, Pclass, Sex, SibSp, Parch)
+
+models <- c("glm", "lda", "naive_bayes", "svmLinear", "knn", "gamLoess", "multinom", "rf", "adaboost")
+fits_1 <- lapply(models, function(model) {
+  print(model)
+  train(Survived ~ ., method = model, data = train_1)
+})
+
+names(fits_1) <- models
+
+y_hats_1 <- sapply(fits_1, function(fit) {
+  predict(fit, newdata = eval_1)
+})
+dim(y_hats_1)
+accuracies_1 <- colMeans(y_hats_1 == eval_1$Survived)
+accuracies_1
+
+ensemble_1 <- apply(y_hats_1, 1, function(row){
+  ifelse(sum(row == "1") >= 5, "1", "0")
+})
+acc_ensemble_1 <- mean(ensemble_1 == eval_1$Survived)
+acc_ensemble_1
+
+y_hats_test_1 <- sapply(fits_1, function(fit) {
+  predict(fit, newdata = test_1)
+})
+# y_hats_test_1
+
+ensemble_test_1 <- apply(y_hats_test_1, 1, function(row) {
+  ifelse(sum(row == "1") >= 5, "1", "0")
+})
+for (i in 1:ncol(y_hats_test_1)) {
+  temp_model <- data.frame(PassengerId = test_1$PassengerId, Survived = y_hats_test_1[, i])
+  write.csv(temp_model, paste("data/Titanic_model_1_", models[i], ".csv", sep = ""), row.names = FALSE)
+}
+submit_model_1 <- data.frame(PassengerId = test_1$PassengerId, Survived = ensemble_test_1)
+write.csv(submit_model_1, "data/Titanic_model_1_ensemble.csv", row.names = FALSE)
+
+```
+After submitting above results, I got below scores for each model. 
+
+
+```{r}
+models
+model_scores <- add_row(model_scores, mondel_num = 1, model = "glm", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "lda", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "naive_bayes", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "svmLinear", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.76555)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "knn", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.75598)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "gamLoess", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "multinom", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "rf", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.76555)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "adaboost", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77511)
+model_scores <- add_row(model_scores, mondel_num = 1, model = "ensemble", 
+                        features_used = "Pclass, Sex, SibSp, Parch", score = 0.77033)
+```
+
+Most models including the ensemble have the score 0.77033 improved by predicting 2 more entries correctly. 
+adaboost has the highest score by predicting 4 more entries correctly than the gender only model. 
+
+```{r}
+(0.77033 - 0.76555) * nrow(test)
+(0.77511 - 0.76555) * nrow(test)
+```
+
+
+## Model 2: This will be similar as model 1 but with more columns after fixing the NA values. 
+I will fill the Age and Fare NA values with median value.  Embarked is in train set only, so not fixing it. 
+Cabin has too many missing values so not using it in the model. 
+
+```{r}
+table(train_set$Embarked, useNA = "always")
+train_2 <- train_set %>% mutate(Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age)) %>% 
+  mutate(Embarked = ifelse(is.na(Embarked), "S", Embarked)) %>% 
+  select(Survived, Pclass, Sex, Age, SibSp, Parch, Fare)
+eval_2 <- eval_set %>% mutate(Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age)) %>% 
+  mutate(Embarked = ifelse(is.na(Embarked), "S", Embarked)) %>% 
+  select(Survived, Pclass, Sex, Age, SibSp, Parch, Fare)
+test_2 <- test %>% mutate(Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age)) %>% 
+  mutate(Fare = ifelse(is.na(Fare), median(Fare, na.rm = TRUE), Fare)) %>% 
+  select(PassengerId, Pclass, Sex, Age, SibSp, Parch, Fare)
+
+models <- c("glm", "lda", "naive_bayes", "svmLinear", "knn", "gamLoess", "multinom", "rf", "adaboost")
+str(train_2)
+fits_2 <- lapply(models, function(model) {
+  print(model)
+  train(Survived ~ ., method = model, data = train_2)
+})
+
+names(fits_2) <- models
+
+y_hats_2 <- sapply(fits_2, function(fit) {
+  predict(fit, newdata = eval_2)
+})
+dim(y_hats_2)
+accuracies_2 <- colMeans(y_hats_2 == eval_2$Survived)
+ensemble_2 <- apply(y_hats_2, 1, function(row){
+  ifelse(sum(row == "1") >= 5, "1", "0")
+})
+acc_ensemble_2 <- mean(ensemble_2 == eval_2$Survived)
+acc_ensemble_2
+
+y_hats_test_2 <- sapply(fits_2, function(fit) {
+  predict(fit, newdata = test_2)
+})
+# y_hats_test_2
+
+ensemble_test_2 <- apply(y_hats_test_2, 1, function(row) {
+  ifelse(sum(row == "1") >= 5, "1", "0")
+})
+
+for (i in 1:ncol(y_hats_test_2)) {
+  temp_model <- data.frame(PassengerId = test_1$PassengerId, Survived = y_hats_test_2[, i])
+  write.csv(temp_model, paste("data/Titanic_model_2_", models[i], ".csv", sep = ""), row.names = FALSE)
+}
+
+submit_model_2 <- data.frame(PassengerId = test_2$PassengerId, Survived = ensemble_test_2)
+write.csv(submit_model_2, "data/Titanic_model_2_ensemble.csv", row.names = FALSE)
+# score: 0.77511 (Submitted on 03/20/2020)
+```
+
+After submitting above results, I got below scores for each model. I did not do it for every model since there is limitations submitting results.
+
+Somehow, what I got are worse than earlier results. It could be that some of the extra variables have not much effect on the prediction and added some noises. 
+
+
+```{r}
+models
+model_scores <- add_row(model_scores, mondel_num = 2, model = "glm", 
+                        features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.75598)
+model_scores <- add_row(model_scores, mondel_num = 2, model = "lda", 
+                        features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.76076)
+model_scores <- add_row(model_scores, mondel_num = 2, model = "naive_bayes", 
+                        features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.75119)
+model_scores <- add_row(model_scores, mondel_num = 2, model = "svmLinear", 
+                        features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.76555)
+model_scores <- add_row(model_scores, mondel_num = 2, model = "knn", 
+                        features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.64593)
+
+
+
+# model_scores <- add_row(model_scores, mondel_num = 2, model = "gamLoess", 
+#                         features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.77033)
+# model_scores <- add_row(model_scores, mondel_num = 2, model = "multinom", 
+#                         features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.77033)
+# model_scores <- add_row(model_scores, mondel_num = 2, model = "rf", 
+#                         features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.77033)
+# model_scores <- add_row(model_scores, mondel_num = 2, model = "adaboost", 
+#                         features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.77033)
+# model_scores <- add_row(model_scores, mondel_num = 2, model = "ensemble", 
+#                         features_used = "Pclass, Sex, SibSp, Parch, Age, Fare", score = 0.77033)
+```
+
+
+
+## Model 3: Using surname field suggested by Chris Deotte. 
+https://www.kaggle.com/cdeotte/titanic-using-name-only-0-81818
+Looking back at Model 0, 1 and 2, model 1 and 2 have slight improvement on the simple gender model. I found that Chris' surname model interesting. He is not really using any fancy modeling but pure analysis on what is missed based on the gender model and made improvement. And the score is the highest that I get. 
+
+The code and logic that he used is sort of tricky to me. I can understand what he is doing but I can't implement his code without referring to his code yet. 
+
+
+
+He focused on trying to determine which males survive and which females perish. 
+
+Many male survivors are among the youth, males under 16 years old.  
+
+```{r}
+train <- read.csv("data/train.csv",stringsAsFactors=F)
+
+train[train$Sex == "male", ] %>% mutate(Age_Group = ifelse(is.na(Age), "Unknow", (ifelse(Age <= 16, "Child", "Adult")))) %>% 
+  group_by(Survived, Age_Group) %>% summarize(total = n())
+
+train[train$Sex == "male", ] %>% mutate(Age_Group = ifelse(is.na(Age), "Unknow", (ifelse(Age <= 16, "Child", "Adult")))) %>% 
+  ggplot(aes(Age_Group, fill = as.factor(Survived))) + geom_bar()
+```
+
+Most females who perish are in Pclass 3.
+```{r}
+train[train$Sex == "female",] %>% ggplot(aes(Pclass, fill = as.factor(Survived))) + geom_bar()
+```
+
+
+The two rules that Chris suggested are:
+1. Predict all males die except boys in families where all females and boys live. 
+2. Predict all females live except those in families where all females and boys die. 
+
+Engineer a new feature to identify "woman-child-groups" and their survival rate. 
+```{r}
+# engineer titles in training dataset
+train$Title <- substring(train$Name,regexpr(",",train$Name)+2,regexpr("\\.",train$Name)-1)
+train$Title[train$Title %in% c("Capt","Don","Major","Col","Rev","Dr","Sir","Mr","Jonkheer")] <- "man"
+train$Title[train$Title %in% c("Dona","the Countess","Mme","Mlle","Ms","Miss","Lady","Mrs")] <- "woman"
+train$Title[train$Title %in% c("Master")] <- "boy"
+# engineer "woman-child-groups" for training dataset
+train$Surname <- substring(train$Name,0,regexpr(",",train$Name)-1)
+train$Surname[train$Title=='man'] <- 'noGroup'
+train$SurnameFreq <- ave(1:891,train$Surname,FUN=length)
+train$Surname[train$SurnameFreq<=1] <- 'noGroup'
+# calculate "woman-child-group" survival rates
+str(train)
+train$SurnameSurvival <- ave(as.numeric(train$Survived),train$Surname)
+table(train$SurnameSurvival[train$Surname!='noGroup'])
+table(train$SurnameSurvival)
+```
+Now, we got 50 families that all perish and 74 families that all survive. 
+```{r}
+x <- train[train$SurnameSurvival == 0, c("Surname")]
+sort(unique(x))
+
+y <- train[train$SurnameSurvival == 1, c("Surname")]
+sort(unique(y))
+```
+
+
+
+```{r}
+# adjust survival rates for use on training set
+train[1:10, ]
+train$AdjustedSurvival <- (train$SurnameSurvival * train$SurnameFreq - train$Survived) / (train$SurnameFreq-1)
+# apply gender model plus new predictor to training set
+train$predict <- 0
+train$predict[train$Title=='woman'] <- 1
+train$predict[train$Title=='boy' & train$AdjustedSurvival==1] <- 1
+train$predict[train$Title=='woman' & train$AdjustedSurvival==0] <- 0
+# plot how new predictor changes gender model
+ggplot(train[train$Title=='woman',]) +
+    geom_jitter(aes(x=Pclass,y=predict,color=factor(Survived))) + 
+    labs(title="36 female predictions change from gender model on training set") +
+    labs(x="Pclass",y="New Predictor") +
+    geom_rect(alpha=0,color="black",aes(xmin=2.5,xmax=3.5,ymin=-0.45,ymax=0.45))
+table(train$Survived[train$Title=='woman' & train$predict==0])
+```
+
+
+```{r}
+# plot how new predictor changes gender model
+ggplot(train[train$Title!='woman',]) +
+    geom_jitter(aes(x=Title,y=predict,color=factor(Survived))) +
+    labs(title="16 male predictions change from gender model on training set") +
+    labs(x="Title",y="New Predictor") +
+    geom_rect(alpha=0,color="black",aes(xmin=0.5,xmax=1.5,ymin=0.55,ymax=1.45))
+table(train$Survived[train$Title!='woman' & train$predict==1])
+```
+
+### Apply above to test data
+```{r}
+test <- read.csv("data/test.csv",stringsAsFactors=F)
+
+# engineer titles in test dataset
+test$Title <- substring(test$Name,regexpr(",",test$Name)+2,regexpr("\\.",test$Name)-1)
+test$Title[test$Title %in% c("Capt","Don","Major","Col","Rev","Dr","Sir","Mr","Jonkheer")] <- "man"
+test$Title[test$Title %in% c("Dona","the Countess","Mme","Mlle","Ms","Miss","Lady","Mrs")] <- "woman"
+test$Title[test$Title %in% c("Master")] <- "boy"
+# engineer "woman-child-groups" for entire dataset
+test$Survived <- NA; test$predict <- NA; train$AdjustedSurvival <- NULL
+train$Surname <- NULL; train$SurnameFreq <- NULL; train$SurnameSurvival <- NULL
+allData <- rbind(train,test)
+allData$Surname <- substring(allData$Name,0,regexpr(",",allData$Name)-1)
+allData$Surname[allData$Title=='man'] <- 'noGroup'
+allData$SurnameFreq <- ave(1:1309,allData$Surname,FUN=length)
+allData$Surname[allData$SurnameFreq<=1] <- 'noGroup'
+# using only "Name" scores 0.81818, correcting surname groups with "Ticket" scores 0.82296
+# search single woman and children and correct surname groups using Ticket
+for (i in which(allData$Title!='man' & allData$Surname=='noGroup'))
+    allData$Surname[i] = allData$Surname[allData$Ticket==allData$Ticket[i]][1]
+allData$Surname[is.na(allData$Surname)] <- 'noGroup'
+# calculate "woman-child-group" survival rates
+allData$SurnameSurvival <- NA
+allData$SurnameSurvival[1:891] <- ave(allData$Survived[1:891],allData$Surname[1:891])
+for (i in 892:1309) allData$SurnameSurvival[i] <- allData$SurnameSurvival[which(allData$Surname==allData$Surname[i])[1]]
+# apply gender model plus new predictor to test dataset
+allData$predict <- 0
+allData$predict[allData$Title=='woman'] <- 1
+allData$predict[allData$Title=='boy' & allData$SurnameSurvival==1] <- 1
+allData$predict[allData$Title=='woman' & allData$SurnameSurvival==0] <- 0
+
+# plot predictions
+ggplot(allData[892:1309,]) +
+    geom_jitter(aes(x=Title,y=predict)) +
+    labs(title="18 predictions change from gender model on test set") +
+    labs(x="Title",y="Prediction") +
+    geom_rect(alpha=0,color="black",aes(xmin=0.5,xmax=1.5,ymin=0.55,ymax=1.45)) +
+    geom_rect(alpha=0,color="black",aes(xmin=2.5,xmax=3.5,ymin=-0.45,ymax=0.45))
+
+# create CSV file to submit
+submit_model_3 <- data.frame(PassengerId = allData$PassengerId[892:1309], Survived = allData$predict[892:1309])
+write.csv(submit_model_3,"data/Titanic_model_3.csv",row.names=F)
+# Score: 0.82296
+```
+
+
+
+
+
+
+
+
+
+
