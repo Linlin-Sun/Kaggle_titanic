@@ -19,7 +19,7 @@ While there was some element of luck involved in surviving, it seems some groups
 In this challenge, we ask you to build a predictive model that answers the question: "what sorts of people were more likely to survive?" using passenger data (ie name, age, gender, socio-economic class, etc).
 
 # Purpose of this document
-As a newnie in the data science world, I would like to use this educational competition as one of my learning guides. I will try with different methods to see how good my prediction will get. The methods include what I learned from my current courses or from the notebooks that other more advanced users posted on kaggle. 
+As a newbie in the data science world, I would like to use this educational competition as one of my learning guides. I will try with different methods to see how good my prediction will get. The methods include what I learned from my current courses and from the notebooks that other more advanced users posted on kaggle. 
 
 ## Load libraries
 
